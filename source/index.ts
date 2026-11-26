@@ -32,7 +32,7 @@ TunnelService.StartReaper();
 
 // final prints
 
-Logger.info(`Welcome to Zalin v${Version.version}.`);
-Logger.info(`Listening on port ${App.server?.port ?? Config.Port} (domain: ${Config.BaseDomain}).`);
+Logger.info(`Welcome to Zalin v${Version.version}`);
+Logger.info(`Listening on port "${App.server?.port ?? Config.Port}" (domain: ${Config.BaseDomain})`);
 
 // end of file
