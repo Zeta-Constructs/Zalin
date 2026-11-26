@@ -77,14 +77,6 @@ export function GetClientIp(
     Req: Request,
     Srv: { requestIP: Server<unknown>["requestIP"] } | null
 ): string {
-    if (process.env.TRUST_PROXY === "1" || process.env.TRUST_PROXY === "true") {
-        const CfIp = Req.headers.get("cf-connecting-ip")?.trim();
-        if (CfIp) return CfIp;
-
-        const Xff = Req.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
-        if (Xff) return Xff;
-    }
-
     return Srv?.requestIP(Req)?.address ?? "unknown";
 }
 
