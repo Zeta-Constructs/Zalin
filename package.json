@@ -1,12 +1,26 @@
 {
   "name": "zalin",
-  "module": "index.ts",
+  "description": "Impromptu Tunneling Service",
+  "author": {
+    "name": "Zeta Constructs",
+    "url": "https://zelaris.stream"
+  },
+  "module": "source/index.ts",
   "type": "module",
   "private": true,
+  "scripts": {
+    "start": "bun run source/index.ts"
+  },
   "devDependencies": {
     "@types/bun": "latest"
   },
   "peerDependencies": {
     "typescript": "^7"
+  },
+  "dependencies": {
+    "elysia": "^2.0.0-rc.6",
+    "picocolors": "^1.1.1",
+    "strip-ansi": "^7.2.0",
+    "winston": "^3.19.0"
   }
 }

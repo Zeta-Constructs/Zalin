@@ -4,7 +4,7 @@
 <div align="center">
   <h1>Zalin</h1>
   <p>Impromptu Tunneling Service</p>
-  <p>Created by <strong>Cxrn_45</strong></p>
+  <p>Created by <strong>Cxrn_45</strong> at <strong>Zeta Constructs</strong></p>
 
   <p>
     <a href="https://bun.com">

@@ -9,6 +9,19 @@
     "allowJs": true,
     "types": ["bun"],
 
+    "paths": {
+      // main folders
+      "@/libraries/*": ["./source/libraries/*"],
+      "@/routes/*": ["./source/routes/*"],
+      "@/services/*": ["./source/services/*"],
+
+      // version
+      "@zalin/version": ["./source/version.json"],
+
+      // definitions
+      "@zalin/routes": ["./source/routes/_definitions/exports.ts"]
+    },
+
     // Bundler mode
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
