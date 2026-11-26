@@ -3,7 +3,7 @@ name: Update Version
 on:
   push:
     branches:
-      - master
+      - main
     # prevent infinite loop: do not trigger on version bump commits
     paths-ignore:
       - 'package.json'
