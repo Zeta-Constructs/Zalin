@@ -2,6 +2,7 @@
 <!-- markdownlint-disable MD041 -->
 
 <div align="center">
+  <img width="180" src="resources/images/logo.jpg" alt="Zalin Logo" />
   <h1>Zalin</h1>
   <p>Impromptu Tunneling Service</p>
   <p>Created by <strong>Cxrn_45</strong> at <strong>Zeta Constructs</strong></p>
