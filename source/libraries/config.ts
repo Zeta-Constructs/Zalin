@@ -19,7 +19,7 @@ const ConfigLog = Logger.child({ name: "Config" });
 const BaseDomain = (process.env.BASE_DOMAIN ?? "localhost").toLowerCase();
 const InstanceSecret = randomBytes(32).toString("hex");
 
-//ConfigLog.info(`Instance secret: ${InstanceSecret}`);
+ConfigLog.info(`Instance secret: ${InstanceSecret}`);
 
 export const Config = {
     Port: Number(process.env.PORT ?? 7000),
