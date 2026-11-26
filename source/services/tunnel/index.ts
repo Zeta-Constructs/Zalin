@@ -19,6 +19,7 @@ import type {
     TunnelRequestFrame,
     TunnelSession,
     TunnelSocket,
+    TunnelStats,
     UpdatedTunnel,
     UpdateTunnelOptions,
 } from "./types";
@@ -76,6 +77,22 @@ export abstract class TunnelService {
 
     public static LookupByHost(Subdomain: string): TunnelSession | undefined {
         return this.ByHost.get(Subdomain);
+    }
+
+    public static GetStats(): TunnelStats {
+        let ConnectedWorkers = 0;
+        let PendingRequests = 0;
+
+        for (const Session of this.ByID.values()) {
+            if (Session.Socket?.readyState === 1) ConnectedWorkers++;
+            PendingRequests += Session.Pending.size;
+        }
+
+        return {
+            Active: this.ByID.size,
+            ConnectedWorkers,
+            PendingRequests,
+        };
     }
 
     public static Create(Input: CreateTunnelOptions = {}): CreatedTunnel {

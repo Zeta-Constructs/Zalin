@@ -7,6 +7,7 @@
 
 // routes
 
+import { Status } from "@/routes/status/v1";
 import { Tunnels } from "@/routes/tunnels/v1";
 
 // plugins
@@ -28,6 +29,7 @@ const RouteLog = Logger.child({ name: "Routes" });
 
 export class Routes {
     // routes
+    public static readonly StatusAPIs = [Status] as const;
     public static readonly TunnelAPIs = [Tunnels] as const;
 
     // plugins
@@ -41,6 +43,7 @@ export class Routes {
 
     // all routes
     public static readonly All = [
+        ...Routes.StatusAPIs,
         ...Routes.TunnelAPIs,
     ] as const;
 
@@ -51,15 +54,8 @@ export class Routes {
             const config = plugin["~config"];
             const name = config?.name ?? "plugin";
 
-            RouteLog.info(`Starting registering for plugin: ${name}`);
-
-            try {
-                App.use(plugin);
-                RouteLog.info(`Successfully registered plugin: ${name}`);
-            } catch (Error) {
-                RouteLog.error(`Failed to register plugin "${name}"`);
-                throw Error;
-            }
+            RouteLog.info(`Registering plugin: ${name}`);
+            App.use(plugin);
         }
 
         for (const route of Routes.All) {

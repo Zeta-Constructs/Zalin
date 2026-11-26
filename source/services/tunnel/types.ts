@@ -72,6 +72,14 @@ export interface UpdatedTunnel {
     HasAccessToken: boolean;
 }
 
+// stats
+
+export interface TunnelStats {
+    Active: number;
+    ConnectedWorkers: number;
+    PendingRequests: number;
+}
+
 // worker protocol frames
 
 export interface TunnelRequestFrame {

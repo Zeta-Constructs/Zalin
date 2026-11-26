@@ -26,5 +26,6 @@ export const v1 = CreateVersion("v1")
 */
 
 export const TunnelsV1 = v1("tunnels")
+export const StatusV1 = v1("status")
 
 // end
