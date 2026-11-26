@@ -7,7 +7,7 @@ on:
     # prevent infinite loop: do not trigger on version bump commits
     paths-ignore:
       - 'package.json'
-      - 'src/version.json'
+      - 'source/version.json'
 
 jobs:
   update-version:
@@ -33,7 +33,7 @@ jobs:
           npm version patch --no-git-tag-version
 
           VERSION=$(node -p "require('./package.json').version")
-          cat <<EOF > src/version.json
+          cat <<EOF > source/version.json
           {
             "version": "$VERSION",
             "commit": "${{ github.sha }}",
@@ -41,6 +41,6 @@ jobs:
           }
           EOF
 
-          git add package.json src/version.json
+          git add package.json source/version.json
           git commit -m "chore(release): bump version to $VERSION [skip ci]"
           git push
