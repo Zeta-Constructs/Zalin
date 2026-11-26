@@ -22,6 +22,7 @@
 
 <br/>
 
+---
 ## Quick Start
 ```bash
 bun install
