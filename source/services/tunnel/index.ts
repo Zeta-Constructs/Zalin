@@ -14,14 +14,18 @@ import { SafeEqual, Sha256 } from "@/libraries/security";
 import type {
     CreatedTunnel,
     CreateTunnelOptions,
+    ProxyWebSocket,
     RotatedTunnel,
     TunnelInboundFrame,
+    TunnelOutboundFrame,
     TunnelRequestFrame,
     TunnelSession,
     TunnelSocket,
     TunnelStats,
     UpdatedTunnel,
     UpdateTunnelOptions,
+    UpgradeServer,
+    WsStreamEntry,
 } from "./types";
 
 // logger
@@ -33,6 +37,7 @@ const TunnelLog = Logger.child({ name: "TunnelService" });
 const MaxBodyBytes = 10 * 1024 * 1024;
 const RequestTimeoutMs = 30_000;
 const MaxInFlightPerTunnel = 500;
+const MaxWsPerTunnel = 100;
 const MaxTunnels = 1000;
 const IdleDisconnectMs = 60_000;
 
@@ -47,6 +52,12 @@ const HopByHopHeaders = new Set([
     "trailer",
     "transfer-encoding",
     "upgrade",
+]);
+const WsHandshakeHeaders = new Set([
+    "sec-websocket-key",
+    "sec-websocket-version",
+    "sec-websocket-extensions",
+    "sec-websocket-accept",
 ]);
 
 // service
@@ -124,6 +135,8 @@ export abstract class TunnelService {
             LastDisconnectedAt: Now,
             CreatedAt: Now,
             Pending: new Map(),
+            PendingWs: new Map(),
+            WsStreams: new Map(),
         };
 
         this.ByID.set(ID, Session);
@@ -195,6 +208,7 @@ export abstract class TunnelService {
         this.ByID.delete(ID);
         this.UnregisterHost(Session);
         this.FailPending(Session, Reason, 502);
+        this.CloseAllWs(Session, 1001, Reason);
 
         try {
             Session.Socket?.close(1000, Reason);
@@ -227,6 +241,7 @@ export abstract class TunnelService {
         Session.Socket = undefined;
         Session.LastDisconnectedAt = Date.now();
         this.FailPending(Session, "Tunnel offline", 502);
+        this.CloseAllWs(Session, 1001, "Tunnel offline");
         TunnelLog.info(`Worker detached from tunnel ${ID}`);
     }
 
@@ -279,7 +294,223 @@ export abstract class TunnelService {
                 Pending.Resolve(new Response(Body, { status: Status, headers: HeadersOut }));
                 return;
             }
+
+            case "ws-opened": {
+                if (typeof Frame.StreamID !== "string") return;
+                const Pending = Session.PendingWs.get(Frame.StreamID);
+                if (!Pending) return;
+
+                Pending.Resolve({
+                    Opened: true,
+                    ...(typeof Frame.Protocol === "string" && Frame.Protocol ? { Protocol: Frame.Protocol } : {}),
+                });
+                return;
+            }
+
+            case "ws-data": {
+                if (typeof Frame.StreamID !== "string" || typeof Frame.DataBase64 !== "string") return;
+                const Entry = Session.WsStreams.get(Frame.StreamID);
+                if (!Entry || Entry.PendingClose) return;
+
+                const Bytes = Buffer.from(Frame.DataBase64, "base64");
+                const Payload = Frame.Binary ? Bytes : Bytes.toString("utf8");
+
+                if (!Entry.Socket) {
+                    Entry.Queued.push({ Binary: Frame.Binary, Data: Payload });
+                    return;
+                }
+
+                if (Entry.Socket.readyState === 1) {
+                    if (Frame.Binary) {
+                        Entry.Socket.sendBinary(Payload as Buffer);
+                    } else {
+                        Entry.Socket.sendText(Payload as string);
+                    }
+                }
+                return;
+            }
+
+            case "ws-close": {
+                if (typeof Frame.StreamID !== "string") return;
+
+                const Pending = Session.PendingWs.get(Frame.StreamID);
+                if (Pending) {
+                    Pending.Resolve({
+                        Opened: false,
+                        Status: typeof Frame.Status === "number" ? Frame.Status : 502,
+                        Reason: typeof Frame.Reason === "string" ? Frame.Reason : "WebSocket rejected",
+                    });
+                    return;
+                }
+
+                const Entry = Session.WsStreams.get(Frame.StreamID);
+                if (!Entry) return;
+
+                if (!Entry.Socket) {
+                    Entry.PendingClose = { Code: Frame.Code, Reason: Frame.Reason };
+                    return;
+                }
+
+                Session.WsStreams.delete(Frame.StreamID);
+                this.SafeCloseWs(Entry.Socket, Frame.Code, Frame.Reason);
+                return;
+            }
         }
+    }
+
+    public static async ForwardWs(
+        Req: Request,
+        Srv: UpgradeServer | null,
+        Session: TunnelSession,
+        ClientIp: string
+    ): Promise<Response> {
+        if (Session.AccessTokenHash) {
+            const Token = Req.headers.get("x-tunnel-auth") ?? "";
+            if (!Token || !SafeEqual(Sha256(Token), Session.AccessTokenHash)) {
+                return new Response(null, { status: 403 });
+            }
+        }
+
+        if (Session.Socket?.readyState !== 1) {
+            return new Response("Tunnel offline", { status: 503 });
+        }
+
+        if (!Srv) {
+            return new Response("WebSocket upgrade unavailable", { status: 500 });
+        }
+
+        if (Session.WsStreams.size + Session.PendingWs.size >= MaxWsPerTunnel) {
+            return new Response("Too many WebSocket streams", { status: 429 });
+        }
+
+        let Path: string;
+        try {
+            const Url = new URL(Req.url);
+            Path = `${Url.pathname}${Url.search}`;
+        } catch {
+            return new Response("Bad Request", { status: 400 });
+        }
+
+        const ForwardHeaders: [string, string][] = [];
+        for (const [K, V] of Req.headers) {
+            const Lower = K.toLowerCase();
+            if (
+                HopByHopHeaders.has(Lower) ||
+                WsHandshakeHeaders.has(Lower) ||
+                Lower === "x-tunnel-auth" ||
+                Lower === "x-forwarded-for"
+            ) {
+                continue;
+            }
+            ForwardHeaders.push([K, V]);
+        }
+        ForwardHeaders.push(["x-forwarded-for", ClientIp]);
+
+        const StreamID = randomBytes(12).toString("hex");
+        const Outcome = await new Promise<{ Opened: boolean; Protocol?: string; Status?: number; Reason?: string }>((Resolve) => {
+            const Cleanup = () => {
+                clearTimeout(Timer);
+                Session.PendingWs.delete(StreamID);
+                Req.signal.removeEventListener("abort", OnAbort);
+            };
+
+            const OnAbort = () => {
+                Cleanup();
+                this.SendToWorker(Session, { Type: "ws-close", StreamID, Code: 1000, Reason: "Client aborted" });
+                Resolve({ Opened: false, Status: 499, Reason: "Client aborted" });
+            };
+
+            const Timer = setTimeout(() => {
+                Cleanup();
+                this.SendToWorker(Session, { Type: "ws-close", StreamID, Code: 1000, Reason: "Handshake timeout" });
+                Resolve({ Opened: false, Status: 504, Reason: "Gateway Timeout" });
+            }, RequestTimeoutMs);
+
+            Req.signal.addEventListener("abort", OnAbort, { once: true });
+            Session.PendingWs.set(StreamID, {
+                Resolve: (Res) => {
+                    Cleanup();
+                    Resolve(Res);
+                },
+                Timer,
+            });
+
+            if (!this.SendToWorker(Session, { Type: "ws-open", StreamID, Path, Headers: ForwardHeaders })) {
+                Cleanup();
+                Resolve({ Opened: false, Status: 502, Reason: "Bad Gateway" });
+            }
+        });
+
+        if (!Outcome.Opened) {
+            return new Response(Outcome.Reason ?? "Bad Gateway", { status: Outcome.Status ?? 502 });
+        }
+
+        if (!this.ByID.has(Session.ID) || Session.Socket?.readyState !== 1) {
+            return new Response("Tunnel offline", { status: 503 });
+        }
+
+        const Entry: WsStreamEntry = { Queued: [] };
+        Session.WsStreams.set(StreamID, Entry);
+
+        const Upgraded = Srv.upgrade(Req, {
+            headers: {
+                "x-zalin": "1",
+                ...(Outcome.Protocol ? { "sec-websocket-protocol": Outcome.Protocol } : {}),
+            },
+            data: {
+                id: undefined,
+                open: (Ws: ProxyWebSocket) => {
+                    Entry.Socket = Ws;
+
+                    for (const Item of Entry.Queued) {
+                        if (Ws.readyState !== 1) break;
+                        if (Item.Binary) Ws.sendBinary(Item.Data as Buffer);
+                        else Ws.sendText(Item.Data as string);
+                    }
+                    Entry.Queued.length = 0;
+
+                    if (Entry.PendingClose) {
+                        Session.WsStreams.delete(StreamID);
+                        this.SafeCloseWs(Ws, Entry.PendingClose.Code, Entry.PendingClose.Reason);
+                    }
+                },
+                message: (Ws: ProxyWebSocket, Raw: string | Buffer | ArrayBuffer | Uint8Array) => {
+                    const Binary = typeof Raw !== "string";
+                    const Bytes = typeof Raw === "string"
+                        ? Buffer.from(Raw, "utf8")
+                        : Raw instanceof ArrayBuffer
+                            ? Buffer.from(Raw)
+                            : Buffer.from(Raw.buffer, Raw.byteOffset, Raw.byteLength);
+
+                    if (Bytes.byteLength > MaxBodyBytes) {
+                        Session.WsStreams.delete(StreamID);
+                        this.SafeCloseWs(Ws, 1009, "Message too large");
+                        this.SendToWorker(Session, { Type: "ws-close", StreamID, Code: 1009, Reason: "Message too large" });
+                        return;
+                    }
+
+                    this.SendToWorker(Session, {
+                        Type: "ws-data",
+                        StreamID,
+                        DataBase64: Bytes.toString("base64"),
+                        Binary,
+                    });
+                },
+                close: (_Ws: ProxyWebSocket, Code: number, Reason: string) => {
+                    if (Session.WsStreams.get(StreamID) !== Entry) return;
+                    Session.WsStreams.delete(StreamID);
+                    this.SendToWorker(Session, { Type: "ws-close", StreamID, Code, Reason });
+                },
+            },
+        });
+
+        if (!Upgraded) {
+            Session.WsStreams.delete(StreamID);
+            this.SendToWorker(Session, { Type: "ws-close", StreamID, Code: 1000, Reason: "Upgrade failed" });
+            return new Response("Expected a websocket connection", { status: 400 });
+        }
+
+        return new Response(null, { status: 200 });
     }
 
     public static async ForwardHttp(Req: Request, Session: TunnelSession, ClientIp: string): Promise<Response> {
@@ -383,13 +614,7 @@ export abstract class TunnelService {
                 Timer,
             });
 
-            try {
-                const Sent = Session.Socket!.send(JSON.stringify(Frame));
-                if (Sent === 0) {
-                    Cleanup();
-                    Resolve(new Response("Bad Gateway", { status: 502 }));
-                }
-            } catch {
+            if (!this.SendToWorker(Session, Frame)) {
                 Cleanup();
                 Resolve(new Response("Bad Gateway", { status: 502 }));
             }
@@ -433,6 +658,15 @@ export abstract class TunnelService {
         if (this.ByHost.get(Active) === Session) this.ByHost.delete(Active);
     }
 
+    private static SendToWorker(Session: TunnelSession, Frame: TunnelOutboundFrame): boolean {
+        if (Session.Socket?.readyState !== 1) return false;
+        try {
+            return Session.Socket.send(JSON.stringify(Frame)) !== 0;
+        } catch {
+            return false;
+        }
+    }
+
     private static async ReadBodyWithLimit(Stream: ReadableStream<Uint8Array>, Limit: number): Promise<Buffer | null> {
         const Reader = Stream.getReader();
         const Chunks: Buffer[] = [];
@@ -457,11 +691,37 @@ export abstract class TunnelService {
         }
     }
 
+    private static SafeCloseWs(Ws: ProxyWebSocket, Code?: number, Reason?: string): void {
+        const ValidCode = Code === 1000 || (typeof Code === "number" && Code >= 3000 && Code <= 4999)
+            ? Code
+            : 1000;
+        const SafeReason = Reason ? Buffer.from(Reason).subarray(0, 120).toString("utf8") : undefined;
+
+        try {
+            Ws.close(ValidCode, SafeReason);
+        } catch {}
+    }
+
     private static FailPending(Session: TunnelSession, Reason: string, Status: number): void {
         for (const [ReqID, Pending] of Session.Pending) {
             clearTimeout(Pending.Timer);
             Pending.Resolve(new Response(Reason, { status: Status }));
             Session.Pending.delete(ReqID);
+        }
+    }
+
+    private static CloseAllWs(Session: TunnelSession, Code: number, Reason: string): void {
+        for (const [StreamID, Pending] of Session.PendingWs) {
+            clearTimeout(Pending.Timer);
+            Pending.Resolve({ Opened: false, Status: 503, Reason });
+            Session.PendingWs.delete(StreamID);
+        }
+
+        for (const [StreamID, Entry] of Session.WsStreams) {
+            if (Entry.Socket) {
+                this.SafeCloseWs(Entry.Socket, Code, Reason);
+            }
+            Session.WsStreams.delete(StreamID);
         }
     }
 }

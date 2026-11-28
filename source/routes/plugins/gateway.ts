@@ -6,10 +6,8 @@
 */
 
 import Elysia from "elysia";
-
 import { Config } from "@/libraries/config";
 import { GetClientIp, ParseSubdomain } from "@/libraries/security";
-
 import { TunnelService } from "@/services/tunnel";
 
 // types
@@ -47,7 +45,7 @@ function AllowIp(Ip: string): boolean {
 
 // plugin
 
-export const Gateway = new Elysia({ name: "zalin.gateway" })
+export const Gateway = new Elysia({ name: "zalin:gateway" })
     .onRequest(({ request, server }) => {
         const ClientIp = GetClientIp(request, server);
         if (!AllowIp(ClientIp)) {
@@ -66,6 +64,10 @@ export const Gateway = new Elysia({ name: "zalin.gateway" })
             case "tunnel": {
                 const Session = TunnelService.LookupByHost(Host.Subdomain);
                 if (!Session) return new Response("Tunnel Not Found", { status: 404 });
+
+                if (request.headers.get("upgrade")?.toLowerCase() === "websocket") {
+                    return TunnelService.ForwardWs(request, server, Session, ClientIp);
+                }
 
                 return TunnelService.ForwardHttp(request, Session, ClientIp);
             }
