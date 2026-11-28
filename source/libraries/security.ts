@@ -26,7 +26,11 @@ export function Sha256(Value: string): Buffer {
 }
 
 export function SafeEqual(A: Buffer, B: Buffer): boolean {
-    return A.length === B.length && timingSafeEqual(A, B);
+    const SameLength = A.length === B.length;
+    // Compare B against itself when lengths differ so timingSafeEqual always runs
+    // Thank you Ceat!
+    const Match = timingSafeEqual(SameLength ? A : B, B);
+    return Match && SameLength;
 }
 
 export function VerifyBearer(Req: Request, ExpectedHash: Buffer): boolean {
@@ -34,7 +38,7 @@ export function VerifyBearer(Req: Request, ExpectedHash: Buffer): boolean {
     if (!Auth?.startsWith("Bearer ")) return false;
 
     const Token = Auth.slice(7).trim();
-    return Token.length > 0 && SafeEqual(Sha256(Token), ExpectedHash);
+    return SafeEqual(Sha256(Token), ExpectedHash) && Token.length > 0;
 }
 
 export function ParseSubdomain(Req: Request, BaseDomain: string): ParsedHost {
@@ -65,7 +69,7 @@ export function ParseSubdomain(Req: Request, BaseDomain: string): ParsedHost {
     }
 
     const Sub = Host.slice(0, Host.length - Suffix.length);
-    // Reject empty or nested subdomains to prevent host confusion
+
     if (!Sub || Sub.includes(".")) {
         return { Kind: "invalid" };
     }
